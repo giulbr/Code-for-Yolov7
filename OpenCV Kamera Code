@@ -1,0 +1,26 @@
+class PiCamera():
+    def __init__(self, src=0, img_size=(640, 480), fps=36, rotate_180=False):
+        self.img_size = img_size
+        self.fps = fps
+        self.rotate_180 = rotate_180
+
+        # Versucht die Kamera zu öffnen 
+        self.cap = cv2.VideoCapture(src)
+        if not self.cap.isOpened():
+            raise RuntimeError("Failed to open camera")
+
+        # Einstellung der Kameraeigenschaften
+        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, self.img_size[0])
+        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, self.img_size[1])
+
+    def run(self):
+        #Liest die Frames
+        ret, image = self.cap.read()
+        if not ret:
+            raise RuntimeError("Failed to read frame")
+
+        # Dreht das Bild (falls erforderlich)
+        if self.rotate_180:
+            image = cv2.rotate(image, cv2.ROTATE_180)
+
+        return image
