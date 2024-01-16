@@ -1,0 +1,91 @@
+class Detector():
+    def __init__(self, model_weights, img_size=640, device='cpu', half=False, trace=True, log_level='INFO', log_dir = './logs/'):
+        # Selbst Initialisierung 
+        self.model_weights = model_weights
+        self.img_size = img_size
+        self.device = torch.device(device)
+        self.half = half  # half = device.type != 'cpu'  # half precision only supported on CUDA
+        self.trace = trace  # Convert model to Traced-model
+        self.log_level = log_level
+        if self.log_level:
+            self.num_log_level = getattr(logging, self.log_level.upper(), 20) ##Translate the log_level input string to one of the accepted values of the logging module, if no 20 - INFO
+            self.log_dir = log_dir
+            log_formatter = logging.Formatter("%(asctime)s %(message)s")
+            logFile = self.log_dir + 'detection.log'
+            my_handler = RotatingFileHandler(logFile, mode='a', maxBytes=25 * 1024 * 1024,
+                                             backupCount=10, encoding='utf-8', delay=False)
+            my_handler.setFormatter(log_formatter)
+            my_handler.setLevel(self.num_log_level)
+            self.logger = logging.getLogger(__name__)  
+            self.logger.setLevel(self.num_log_level)
+            self.logger.addHandler(my_handler)
+        # Pfad zum Yolo-Modell hinzufügen, da Pytorch bei jedem Aufruf von „load('weights.pt‘)“ nach der Modellkonfiguration in der Pfadumgebungsvariablen (models/yolo) sucht
+        yolo_folder_dir = str(Path(__file__).parent.absolute()) +"\yolov7" #  models folder path
+        sys.path.insert(0, yolo_folder_dir)
+        # Model laden
+        self.model = attempt_load(self.model_weights, map_location=self.device)  # load FP32 model
+        # Modell in Traced konventieren
+        if self.trace:
+            self.model = TracedModel(self.model, self.device, self.img_size)
+        # wenn Hälfte
+        #     model.half()  # to FP16
+        # Name & Farbe abrufen
+        self.names = self.model.module.names if hasattr(self.model, 'module') else self.model.names
+        if len(self.names) > 1:
+            self.colors = [[0, 255, 127]] + [[random.randint(0, 255) for _ in range(3)] for _ in self.names[1:]]
+        else:
+            self.colors = [[0, 255, 127]]
+        sys.path.remove(yolo_folder_dir)
+    def run(self, inp_image, conf_thres=0.25):
+        # Inferenz aufrufen
+        # Daten laden
+        dataset = LoadImage(inp_image, device=self.device, half=self.half)
+        t0 = time.time()
+        self.file_name, self.img, self.im0 = dataset.preprocess()
+        # Inferenz 
+        t1 = time.time()
+        with torch.no_grad():  # die Berechnung von Farbverläufen würde einen GPU-Speicherverlust verursachen
+            self.pred = self.model(self.img)[0]
+        t2 = time.time()
+        # NMS anwenden
+        self.pred = non_max_suppression(self.pred, conf_thres=conf_thres)
+        t3 = time.time()
+        # Prozesserkennung
+        bbox = None  # Begrenzungsrahmen des erkannten Objekts
+        cropped_img = None  # Ausgeschnittenes erkanntes Objekt
+        det_conf = None  # Konfidenzniveau für erkanntes Objekt
+        self.det = self.pred[0]  # pred[0] - NMX suppr returns list with 1 tensor per image;
+        if len(self.det):
+            # Größenskalierung 
+            self.det[:, :4] = scale_coords(self.img.shape[2:], self.det[:, :4], self.im0.shape).round()
+            # Druckergebnisse 
+            print_strng = ""
+            for c in self.det[:, -1].unique():
+                n = (self.det[:, -1] == c).sum()  # detections per class
+                print_strng += f"{n} {self.names[int(c)]}{'s' * (n > 1)}"  # add to string
+            # Druckzeit (inference + NMS)
+            print(
+                f'{print_strng} detected. ({(1E3 * (t1 - t0)):.1f}ms)-Load data, ({(1E3 * (t2 - t1)):.1f}ms)-Inference, ({(1E3 * (t3 - t2)):.1f}ms)-NMS')
+            # Ergebnisse in eine Datei schreiben (Wenn Debugmodus) 
+            if self.log_level:
+                self.logger.debug(
+                    f'{self.file_name} {print_strng} detected. ({(1E3 * (t1 - t0)):.1f}ms)-Load data, ({(1E3 * (t2 - t1)):.1f}ms)-Inference, ({(1E3 * (t3 - t2)):.1f}ms)-NMS')
+                if self.logger.getEffectiveLevel() == 10:  # level 10 = debug
+                    gn = torch.tensor(self.im0.shape)[[1, 0, 1, 0]]  # normalization gain whwh
+                    for *xyxy, conf, cls in reversed(self.det):
+                        # Erkennung mit BBOX im X, Y, Höhe, Breite Format
+                        xywh = (xyxy2xywh(torch.tensor(xyxy).view(1, 4)) / gn).view(-1).tolist()  # normalized xywh
+                        line = (int(cls), np.round(conf, 3), *xywh)  # label format
+                        self.logger.debug(f"{self.file_name} {('%g ' * len(line)).rstrip() % line}")
+            # Erkenne die maximale Sicherheit
+            indx = self.pred[0].argmax(0)[
+                4]  # pred[0] - NMX suppr returns list with 1 tensor per image; argmax(0)[4] - conf has indx 4 in [x1,y1,x2,y2,conf,cls]
+            max_det = self.pred[0][indx]
+            # Ermittle bounding boxe & entsprechende Bildausschnitte sammeln
+            bbox = max_det[:4]
+            cropped_img = save_crop(max_det[:4], self.im0)
+            cropped_img = cropped_img[:, :, ::-1] # # BGR to RGB
+            det_conf = max_det[4:5]
+        print(f'Detection total time: {time.time() - t0:.3f}s')
+        return {'file_name': self.file_name, 'orig_img': self.im0, 'cropped_img': cropped_img, 'bbox': bbox,
+                'det_conf': det_conf}
