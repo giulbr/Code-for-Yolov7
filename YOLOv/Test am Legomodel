@@ -1,0 +1,31 @@
+class Action():
+    def __init__(self):
+        self.motor = Motor('A')
+        self.motor.set_default_speed(25)
+        self.matrix = Matrix('B')
+        self.ok_color = [[(6, 10) for x in range(3)] for y in range(3)]
+        self.nok_color = [[(9, 10) for x in range(3)] for y in range(3)]
+        self.matrix.set_transition(2) #fade-in/out
+        self.matrix.set_pixel((1, 1), ("blue", 10))
+
+    def _handle_motor(self, speed, pos, apos):
+        print("Motor:", speed, pos, apos)
+
+    def run(self, action_status):
+        while True:
+            if action_status[0] == 'Allowed':
+                self.matrix.set_pixels(self.ok_color)
+                time.sleep(1)
+                self.motor.run_for_degrees(-90, blocking=False)
+                time.sleep(5)
+                self.motor.run_for_degrees(90, blocking=False)
+                time.sleep(1)
+            elif action_status[0] == 'Prohibited':
+                self.matrix.set_pixels(self.nok_color)
+                time.sleep(3)
+            else:
+                self.matrix.clear()
+                self.matrix.set_pixel((1, 1), ("blue", 10))
+                time.sleep(1)
+                self.matrix.set_pixel((1, 1), (0, 10))
+                time.sleep(1)
